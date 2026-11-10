@@ -33,7 +33,7 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
-            coins INTEGER DEFAULT 200,
+            coins INTEGER DEFAULT 0,
             total_spent INTEGER DEFAULT 0,
             active_projects INTEGER DEFAULT 0,
             referrals INTEGER DEFAULT 0,
@@ -49,11 +49,12 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_setups (
             user_id INTEGER PRIMARY KEY,
-            channel_link TEXT DEFAULT 'Not set',
-            views TEXT DEFAULT 'Not set',
-            reacts TEXT DEFAULT 'Not set',
-            reacts_status TEXT DEFAULT 'ON',
-            views_status TEXT DEFAULT 'ON'
+            channel_link TEXT DEFAULT 'https://t.me/rahulloohi',
+            views_count INTEGER DEFAULT 500,
+            reacts_count INTEGER DEFAULT 500,
+            react_service TEXT DEFAULT 'ON',
+            view_service TEXT DEFAULT 'OFF',
+            emojis TEXT DEFAULT '👍 ❤️ 🔥'
         )
     """)
     cursor.execute("""
@@ -66,9 +67,9 @@ def init_db():
             status TEXT
         )
     """)
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('rate_multiplier', '3')")
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('binance_uid', ?)", (DEFAULT_BINANCE_UID,))
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('global_orders', 'ON')")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('is_premium', 'True')")
     conn.commit()
     conn.close()
 
@@ -105,18 +106,9 @@ class OneXPanelAPI:
             logger.error(f"API Order Error: {e}")
             return {"error": "API Connection Failed"}
 
-    def status(self, order_id):
-        post = {'key': self.api_key, 'action': 'status', 'order': order_id}
-        try:
-            response = requests.post(self.api_url, data=post, timeout=15)
-            return response.json()
-        except Exception as e:
-            logger.error(f"API Status Error: {e}")
-            return {}
-
 api_client = OneXPanelAPI(API_KEY)
 
-# --- ফিক্সড রিপ্লাই কিবোর্ড (নিচের বাটনগুলো) ---
+# --- ফিক্সড কিবোর্ড ---
 def get_main_keyboard(user_id):
     keyboard = [
         [KeyboardButton("⚙️ Setup"), KeyboardButton("👤 Profile")],
@@ -146,7 +138,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, coins) VALUES (?, ?)", (user_id, 200))
+    # জিরো ব্যালেন্স (ডিপোজিট ছাড়া কোনো ফ্রিতে কয়েন পাবে না)
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, coins) VALUES (?, 0)", (user_id,))
     cursor.execute("INSERT OR IGNORE INTO user_setups (user_id) VALUES (?)", (user_id,))
     conn.commit()
     conn.close()
@@ -170,15 +163,18 @@ async def show_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor = conn.cursor()
     cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
-    cursor.execute("SELECT channel_link, views, reacts FROM user_setups WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT channel_link, views_count, reacts_count FROM user_setups WHERE user_id = ?", (user_id,))
     setup_row = cursor.fetchone()
     conn.close()
 
-    coins = row[0] if row else 200
-    ch_link, views, reacts = setup_row if setup_row else ('Not set', 'Not set', 'Not set')
+    coins = row[0] if row else 0
+    ch_link, views, reacts = setup_row if setup_row else ('https://t.me/rahulloohi', 500, 500)
+
+    is_prem = get_setting("is_premium") == "True"
+    badge = "👑 [PREMIUM]" if is_prem else ""
 
     text = (
-        f"Telegram Super Service\n"
+        f"Telegram Super Service {badge}\n"
         f"110 monthly users\n\n"
         f"🔗 Channel: {ch_link}\n"
         f"👀 Views: {views}\n"
@@ -194,6 +190,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    user_id = query.from_user.id
 
     if data == "check_join":
         if await check_forced_join(update, context):
@@ -202,84 +199,160 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("❌ আপনি এখনো গ্রুপে জয়েন করেননি!", show_alert=True)
 
+    elif data == "toggle_react":
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT react_service FROM user_setups WHERE user_id = ?", (user_id,))
+        curr = cursor.fetchone()[0]
+        new_val = "OFF" if curr == "ON" else "ON"
+        cursor.execute("UPDATE user_setups SET react_service = ? WHERE user_id = ?", (new_val, user_id))
+        conn.commit()
+        conn.close()
+        await render_settings_msg(query, user_id)
+
+    elif data == "toggle_view":
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT view_service FROM user_setups WHERE user_id = ?", (user_id,))
+        curr = cursor.fetchone()[0]
+        new_val = "OFF" if curr == "ON" else "ON"
+        cursor.execute("UPDATE user_setups SET view_service = ? WHERE user_id = ?", (new_val, user_id))
+        conn.commit()
+        conn.close()
+        await render_settings_msg(query, user_id)
+
+    elif data == "edit_settings_btn":
+        context.user_data['setup_step'] = 'waiting_channel'
+        await query.message.reply_text("🔗 নতুন চ্যানেলের লিংক বা ইউজারনেম দিন:")
+
     elif data.startswith("approve_pay_"):
         target_uid = data.split("_")[2]
         context.user_data['target_user_for_coins'] = target_uid
         context.user_data['waiting_admin_coin_input'] = True
         await query.message.reply_text(
             f"👤 **ইউজার আইডি:** `{target_uid}`\n\n"
-            f"✍️ **আপনি উনাকে কত কয়েন দিতে চান তা টাইপ করে লিখুন (যেমন: 50000):**",
+            f"✍️ **আপনি উনাকে কত কয়েন দিতে চান তা লিখুন:**",
             parse_mode="Markdown"
         )
 
-    elif data == "toggle_reacts_setting":
-        user_id = query.from_user.id
-        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT reacts_status FROM user_setups WHERE user_id = ?", (user_id,))
-        curr = cursor.fetchone()[0]
-        new_val = "OFF" if curr == "ON" else "ON"
-        cursor.execute("UPDATE user_setups SET reacts_status = ? WHERE user_id = ?", (new_val, user_id))
-        conn.commit()
-        conn.close()
-        
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Reacts & Views: {new_val}", callback_data="toggle_reacts_setting")],
-            [InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")]
-        ])
-        await query.message.edit_reply_markup(reply_markup=kb)
-        await query.answer(f"Status changed to {new_val}")
+    elif data == "toggle_premium_mode":
+        curr = get_setting("is_premium") == "True"
+        new_v = "False" if curr else "True"
+        update_setting("is_premium", new_v)
+        await query.answer(f"Premium Mode set to {new_v}", show_alert=True)
 
-    elif data == "back_to_settings":
-        user_id = query.from_user.id
-        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT reacts_status FROM user_setups WHERE user_id = ?", (user_id,))
-        r_status = cursor.fetchone()[0]
-        conn.close()
-        
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Reacts & Views: {r_status}", callback_data="toggle_reacts_setting")]
-        ])
-        await query.message.edit_text(f"🛠️ **Settings**\n\nরিঅ্যাকশন ও ভিউ সার্ভিস অন বা অফ করুন:", reply_markup=kb, parse_mode="Markdown")
+async def render_settings_msg(query, user_id):
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT channel_link, react_service, view_service, reacts_count, views_count, emojis FROM user_setups WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
 
-# --- প্রধান মেসেজ ও গ্রুপ হ্যান্ডলার ---
+    ch, r_s, v_s, r_c, v_c, emo = row if row else ("https://t.me/rahulloohi", "ON", "OFF", 500, 500, "👍 ❤️ 🔥")
+    ch_name = ch.split('/')[-1] if '/' in ch else ch
+
+    r_btn = f"👍 React: {r_s} {'✅' if r_s=='ON' else '❌'}"
+    v_btn = f"👁 Views: {v_s} {'✅' if v_s=='ON' else '❌'}"
+
+    text = (
+        f"🛠️ **Project Settings #1: {ch_name}**\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 **Link:** {ch}\n"
+        f"👍 **Reaction Service:** {r_s}\n"
+        f"👁 **View Service:** {v_s}\n"
+        f"🚀 **Reaction Count:** {r_c}\n"
+        f"👁 **View Count:** {v_c}\n"
+        f"😊 **Emoji:** POSITIVE {emo}"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(r_btn, callback_data="toggle_react"), InlineKeyboardButton(v_btn, callback_data="toggle_view")],
+        [InlineKeyboardButton("✏️ Edit Settings", callback_data="edit_settings_btn")]
+    ])
+
+    await query.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+# --- প্রধান মেসেজ হ্যান্ডলার ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     photo = update.message.photo
 
-    # ১. গ্রুপ বা চ্যানেলে পোস্ট আসলে অটোমেটিক অর্ডারিং (Service 1936)
+    # ১. গ্রুপ বা চ্যানেলে পোস্ট আসলে অটোমেটিক অর্ডারিং এবং নিখুঁত কয়েন ক্যালকুলেশন
     if update.message.chat.type in ["supergroup", "channel"]:
         if get_setting("global_orders") == "OFF":
             return
         
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
+        user_row = cursor.fetchone()
+        current_coins = user_row[0] if user_row else 0
+        
+        cursor.execute("SELECT reacts_count, views_count, react_service, view_service FROM user_setups WHERE user_id = ?", (user_id,))
+        setup_row = cursor.fetchone()
+        
+        reacts_qty = int(setup_row[0]) if setup_row and str(setup_row[0]).isdigit() else 500
+        views_qty = int(setup_row[1]) if setup_row and str(setup_row[1]).isdigit() else 0
+        r_service = setup_row[2] if setup_row else "ON"
+        v_service = setup_row[3] if setup_row else "OFF"
+
+        # কয়েন হিসাব: ১০০০ রিঅ্যাকশন = ৩০০০ কয়েন (প্রতিটি ৩ কয়েন), ১০০০ ভিউ = ২০০০ কয়েন (প্রতিটি ২ কয়েন)
+        react_cost = (reacts_qty * 3) if r_service == "ON" else 0
+        view_cost = (views_qty * 2) if v_service == "ON" else 0
+        total_cost_coins = react_cost + view_cost
+
+        if current_coins < total_cost_coins or total_cost_coins == 0:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id, 
+                    text=f"⚠️ **অর্ডার নেওয়া সম্ভব হয়নি!**\n\n💰 আপনার অ্যাকাউন্ট ব্যালেন্স: **{current_coins} Coins**\nপ্রয়োজন: **{total_cost_coins} Coins**\n\nদয়া করে Top-up করে ব্যালেন্স রিচার্জ করুন।"
+                )
+            except:
+                pass
+            conn.close()
+            return
+
+        # ব্যালেন্স থেকে কয়েন কেটে নেওয়া
+        cursor.execute("UPDATE users SET coins = coins - ?, total_spent = total_spent + ? WHERE user_id = ?", (total_cost_coins, total_cost_coins, user_id))
+        conn.commit()
+        conn.close()
+
         post_link = f"https://t.me/{update.message.chat.username}/{update.message.message_id}" if update.message.chat.username else f"https://t.me/c/{str(update.message.chat.id).replace('-100', '')}/{update.message.message_id}"
         
-        order_data = {
-            'service': 1936,
-            'link': post_link,
-            'quantity': 1000
-        }
+        # 1936 সার্ভিস অর্ডারিং
+        order_data = {'service': 1936, 'link': post_link, 'quantity': reacts_qty}
         api_res = api_client.order(order_data)
         
         if isinstance(api_res, dict) and 'order' in api_res:
             order_id = str(api_res['order'])
             
-            # অর্ডার চ্যানেলে আপনার দেওয়া ফরম্যাটে আপডেট পাঠানো
-            channel_text = (
-                f"ORDER UPDATE\n"
-                f"#{order_id}\n"
-                f"Reacts|500\n"
-                f"PENDING"
-            )
+            conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO orders (user_id, order_id, link, quantity, status) VALUES (?, ?, ?, ?, ?)",
+                           (user_id, order_id, post_link, str(reacts_qty), "PENDING"))
+            conn.commit()
+            conn.close()
+
+            # ইনবক্স নোটিফিকেশন
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🚀 **অর্ডার পেন্ডিং আছে!**\n\n🆔 Order ID: `#{order_id}`\n❤️ Reacts: {reacts_qty}\n👀 Views: {views_qty}\n🔗 Link: {post_link}\n🪙 খরচ হয়েছে: {total_cost_coins} Coins",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+
+            # অর্ডার চ্যানেলে ডায়নামিক আপডেট
+            channel_text = f"ORDER UPDATE\n#{order_id}\nReacts|{reacts_qty}\nPENDING"
             try:
                 await context.bot.send_message(chat_id=REQUIRED_CHANNEL, text=channel_text)
             except Exception as e:
                 logger.error(f"Error sending to order channel: {e}")
         return
 
-    # ২. এডমিন কয়েন ইনপুট
+    # ২. এডমিন কয়েন অনুমোদন (Top-up approve)
     if user_id == ADMIN_ID and context.user_data.get('waiting_admin_coin_input'):
         target_uid = context.user_data.pop('target_user_for_coins', None)
         context.user_data['waiting_admin_coin_input'] = False
@@ -296,108 +369,78 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_text(f"✅ সফলভাবে ইউজার `{target_uid}` এর অ্যাকাউন্টে `{add_coins}` কয়েন জমা হয়েছে! বর্তমান ব্যালেন্স: {new_bal}", parse_mode="Markdown")
             try:
-                await context.bot.send_message(chat_id=target_uid, text=f"🎉 আপনার পেমেন্ট কনফার্ম হয়েছে! অ্যাকাউন্টে **{add_coins} Coins** যোগ করা হয়েছে।", parse_mode="Markdown")
+                await context.bot.send_message(chat_id=target_uid, text=f"🎉 আপনার পেমেন্ট কনফার্ম হয়েছে! অ্যাকাউন্টে **{add_coins} Coins** যোগ করা হয়েছে।\n💰 বর্তমান ব্যালেন্স: **{new_bal} Coins**", parse_mode="Markdown")
             except:
                 pass
             return
 
-    # ৩. Setup বাটন ফ্লো
+    # ৩. Setup প্রসেস
     if text == "⚙️ Setup":
         context.user_data['setup_step'] = 'waiting_channel'
-        await update.message.reply_text("🔗 আপনার চ্যানেলের আসল ইউজারনেম দিন (যেমন: `@mychannel`):")
+        await update.message.reply_text("🔗 আপনার চ্যানেলের লিংক বা ইউজারনেম দিন (যেমন: `https://t.me/rahulloohi`):")
         return
 
     setup_step = context.user_data.get('setup_step')
     if setup_step == 'waiting_channel':
         context.user_data['temp_channel'] = text
         context.user_data['setup_step'] = 'waiting_reacts'
-        await update.message.reply_text("❤️ কত রিঅ্যাকশন নিতে চান? (মিনিমাম ৫০ হতে হবে):")
+        await update.message.reply_text("❤️ কত রিঅ্যাকশন নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
         return
     
     elif setup_step == 'waiting_reacts':
         context.user_data['temp_reacts'] = text
         context.user_data['setup_step'] = 'waiting_views'
-        await update.message.reply_text("👀 কত ভিউ নিতে চান? সংখ্যাটি লিখুন:")
+        await update.message.reply_text("👀 কত ভিউ নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
         return
 
     elif setup_step == 'waiting_views':
-        ch = context.user_data.pop('temp_channel', 'Not set')
-        reacts = context.user_data.pop('temp_reacts', 'Not set')
+        ch = context.user_data.pop('temp_channel', 'https://t.me/rahulloohi')
+        reacts = context.user_data.pop('temp_reacts', 500)
         views = text
         context.user_data.pop('setup_step', None)
 
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("UPDATE user_setups SET channel_link = ?, views = ?, reacts = ? WHERE user_id = ?", (ch, views, reacts, user_id))
+        cursor.execute("UPDATE user_setups SET channel_link = ?, views_count = ?, reacts_count = ? WHERE user_id = ?", (ch, views, reacts, user_id))
         conn.commit()
         conn.close()
 
-        await update.message.reply_text(
-            f"✅ **সেটআপ সফলভাবে সেভ হয়েছে!**\n\n"
-            f"🔗 Channel: {ch}\n"
-            f"❤️ Reacts: {reacts}\n"
-            f"👀 Views: {views}",
-            reply_markup=get_main_keyboard(user_id),
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(f"✅ **সেটআপ সফলভাবে সেভ হয়েছে!**\n🔗 Link: {ch}\n❤️ Reacts: {reacts}\n👀 Views: {views}", reply_markup=get_main_keyboard(user_id), parse_mode="Markdown")
         return
 
-    # ৪. Profile
-    if text == "👤 Profile":
-        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT coins, total_spent, active_projects, referrals, referral_income FROM users WHERE user_id = ?", (user_id,))
-        u = cursor.fetchone()
-        conn.close()
-        c, ts, ap, ref, ref_inc = u if u else (200, 0, 0, 0, 0)
-        
-        await update.message.reply_text(
-            f"👤 **User Profile**\n\n🆔 User ID: `{user_id}`\n💰 Coin Balance: {c}\n💸 Total Spent: {ts}\n🚀 Active Projects: {ap}",
-            parse_mode="Markdown"
-        )
-        return
-
-    # ৫. Settings (রিঅ্যাকশন অন/অফ বাটন)
+    # ৪. Settings মেনু
     if text == "🛠️ Settings":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("SELECT reacts_status FROM user_setups WHERE user_id = ?", (user_id,))
+        cursor.execute("SELECT channel_link, react_service, view_service, reacts_count, views_count, emojis FROM user_setups WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
-        r_status = row[0] if row else "ON"
         conn.close()
 
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Reacts & Views: {r_status}", callback_data="toggle_reacts_setting")]
-        ])
-        await update.message.reply_text("🛠️ **Settings**\n\nরিঅ্যাকশন ও ভিউ সার্ভিস অন বা অফ করুন:", reply_markup=kb, parse_mode="Markdown")
-        return
+        ch, r_s, v_s, r_c, v_c, emo = row if row else ("https://t.me/rahulloohi", "ON", "OFF", 500, 500, "👍 ❤️ 🔥")
+        ch_name = ch.split('/')[-1] if '/' in ch else ch
 
-    # ৬. Top-up
-    if text == "💳 Top-up":
-        binance_uid = get_setting("binance_uid")
-        context.user_data['waiting_for_proof'] = True
-        await update.message.reply_text(
-            f"💳 **Top-up Balance**\n\n📌 **Binance UID:** `{binance_uid}`\n\n📤 টাকা পাঠিয়ে পেমেন্টের স্ক্রিনশট এখানে পাঠান।",
-            parse_mode="Markdown"
+        r_btn = f"👍 React: {r_s} {'✅' if r_s=='ON' else '❌'}"
+        v_btn = f"👁 Views: {v_s} {'✅' if v_s=='ON' else '❌'}"
+
+        card_text = (
+            f"🛠️ **Project Settings #1: {ch_name}**\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🔗 **Link:** {ch}\n"
+            f"👍 **Reaction Service:** {r_s}\n"
+            f"👁 **View Service:** {v_s}\n"
+            f"🚀 **Reaction Count:** {r_c}\n"
+            f"👁 **View Count:** {v_c}\n"
+            f"😊 **Emoji:** POSITIVE {emo}"
         )
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(r_btn, callback_data="toggle_react"), InlineKeyboardButton(v_btn, callback_data="toggle_view")],
+            [InlineKeyboardButton("✏️ Edit Settings", callback_data="edit_settings_btn")]
+        ])
+        await update.message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
         return
 
-    if context.user_data.get('waiting_for_proof') or photo:
-        if photo or context.user_data.get('waiting_for_proof'):
-            context.user_data['waiting_for_proof'] = False
-            admin_kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Add / Enter Coins", callback_data=f"approve_pay_{user_id}")]])
-            caption = f"🚨 **নতুন ডিপোজিট স্ক্রিনশট!**\n\n👤 ইউজার আইডি: `{user_id}`\n\n👇 কয়েন জমা করতে নিচের বাটনে ক্লিক করুন:"
-            try:
-                if photo:
-                    await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo[-1].file_id, caption=caption, reply_markup=admin_kb, parse_mode="Markdown")
-                else:
-                    await context.bot.send_message(chat_id=ADMIN_ID, text=caption, reply_markup=admin_kb, parse_mode="Markdown")
-                await update.message.reply_text("✅ পেমেন্ট স্ক্রিনশট এডমিনের কাছে পাঠানো হয়েছে।")
-            except:
-                pass
-            return
-
-    # ৭. Order List
+    # ৫. Order List
     if text == "📦 Order List":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -406,20 +449,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         if not orders:
-            await update.message.reply_text("📦 আপনার কোনো সাম্প্রতিক অর্ডার নেই।")
+            await update.message.reply_text("📦 আপনার কোনো অর্ডার হিস্ট্রি পাওয়া যায়নি।")
         else:
-            msg = "📦 **Recent Orders:**\n\n"
+            msg = "📦 **Your Order List:**\n\n"
             for o in orders:
-                msg += f"🆔 ID: `{o[0]}`\n🔗 Link: {o[1]}\n📦 Qty: {o[2]} | Status: {o[3]}\n\n"
+                msg += f"🆔 Order ID: `#{o[0]}`\n🔗 Link: {o[1]}\n📦 Qty: {o[2]} | Status: **{o[3]}**\n\n"
             await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
-    # ৮. Support
-    if text == "🎧 Support":
-        await update.message.reply_text("🎧 যেকোনো সমস্যায় যোগাযোগ করুন: https://t.me/NIROB_GX")
+    # ৬. Profile, Top-up, Admin Control Panel
+    if text == "👤 Profile":
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT coins, total_spent, active_projects, referrals, referral_income FROM users WHERE user_id = ?", (user_id,))
+        u = cursor.fetchone()
+        conn.close()
+        c, ts, ap, ref, ref_inc = u if u else (0, 0, 0, 0, 0)
+        await update.message.reply_text(f"👤 **User Profile**\n\n🆔 User ID: `{user_id}`\n💰 Coin Balance: {c}\n💸 Total Spent: {ts}\n🚀 Active Projects: {ap}", parse_mode="Markdown")
         return
 
-    # ৯. Refer & Earn
+    if text == "💳 Top-up":
+        binance_uid = get_setting("binance_uid")
+        context.user_data['waiting_for_proof'] = True
+        await update.message.reply_text(f"💳 **Top-up Balance**\n\n📌 **Binance UID:** `{binance_uid}`\n\n📤 পেমেন্ট করে স্ক্রিনশট এখানে পাঠান।", parse_mode="Markdown")
+        return
+
+    if context.user_data.get('waiting_for_proof') or photo:
+        if photo or context.user_data.get('waiting_for_proof'):
+            context.user_data['waiting_for_proof'] = False
+            admin_kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Add / Enter Coins", callback_data=f"approve_pay_{user_id}")]])
+            caption = f"🚨 **নতুন ডিপোজিট স্ক্রিনশট!**\n\n👤 ইউজার আইডি: `{user_id}`\n\n👇 কয়েন দিতে বাটনে চাপুন:"
+            try:
+                if photo:
+                    await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo[-1].file_id, caption=caption, reply_markup=admin_kb, parse_mode="Markdown")
+                else:
+                    await context.bot.send_message(chat_id=ADMIN_ID, text=caption, reply_markup=admin_kb, parse_mode="Markdown")
+                await update.message.reply_text("✅ স্ক্রিনশট এডমিনের কাছে পাঠানো হয়েছে।")
+            except:
+                pass
+            return
+
+    if user_id == ADMIN_ID and text == "👑 Admin Control Panel":
+        is_prem = get_setting("is_premium") == "True"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"Premium Mode: {'ON 👑' if is_prem else 'OFF ❌'}", callback_data="toggle_premium_mode")]
+        ])
+        await update.message.reply_text("👑 **Admin Control Panel**\n১-ক্লিকে প্রিমিয়াম বাটন অন/অফ করুন:", reply_markup=kb)
+        return
+
+    if text == "🎧 Support":
+        await update.message.reply_text("🎧 যেকোনো সাহায্যে যোগাযোগ করুন: https://t.me/NIROB_GX")
+        return
+
     if text == "👥 Refer & Earn":
         bot_username = (await context.bot.get_me()).username
         await update.message.reply_text(f"👥 **Refer & Earn**\nআপনার লিঙ্ক: `https://t.me/{bot_username}?start={user_id}`", parse_mode="Markdown")
@@ -432,7 +513,7 @@ def main():
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
 
-    print("GX SMM Ultimate Bot v2 is running successfully...")
+    print("GX SMM Ultimate Dynamic Bot is running...")
     application.run_polling()
 
 if __name__ == "__main__":
