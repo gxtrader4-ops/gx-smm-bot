@@ -280,17 +280,19 @@ async def render_settings_msg(query, user_id):
 
     await query.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-# --- গ্রুপ বা চ্যানেলের পোস্ট হ্যান্ডলার (অটোমেটিক অর্ডারিং) ---
-async def group_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- মূল মেসেজ ও পোস্ট হ্যান্ডলার ---
+async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
-    if not message or not message.chat:
-        return
-    
-    chat = message.chat
-    if chat.type in ["supergroup", "channel"]:
+    user_id = update.effective_user.id if update.effective_user else None
+    text = message.text if message and message.text else ""
+    photo = message.photo if message else None
+
+    # ১. যদি গ্রুপ বা চ্যানেলে পোস্ট হয় (অটো অর্ডার 1936)
+    if message and message.chat and message.chat.type in ["supergroup", "channel"]:
         if get_setting("global_orders") == "OFF":
             return
         
+        chat = message.chat
         if chat.username:
             post_link = f"https://t.me/{chat.username}/{message.message_id}"
         else:
@@ -355,16 +357,12 @@ async def group_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await context.bot.send_message(chat_id=REQUIRED_CHANNEL, text=channel_text)
             except Exception as e:
                 logger.error(f"Error sending to order channel: {e}")
-
-# --- সাধারণ মেসেজ হ্যান্ডলার (বট চ্যাট) ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id if update.effective_user else None
-    text = update.message.text if update.message and update.message.text else ""
-    photo = update.message.photo if update.message else None
-
-    if not update.message or not update.message.text:
         return
 
+    if not user_id:
+        return
+
+    # ২. এডমিন কয়েন অনুমোদন
     if user_id == ADMIN_ID and context.user_data.get('waiting_admin_coin_input'):
         target_uid = context.user_data.pop('target_user_for_coins', None)
         context.user_data['waiting_admin_coin_input'] = False
@@ -379,16 +377,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
             conn.close()
 
-            await update.message.reply_text(f"✅ সফলভাবে ইউজার `{target_uid}` এর অ্যাকাউন্টে `{add_coins}` কয়েন জমা হয়েছে! বর্তমান ব্যালেন্স: {new_bal}", parse_mode="Markdown")
+            await message.reply_text(f"✅ সফলভাবে ইউজার `{target_uid}` এর অ্যাকাউন্টে `{add_coins}` কয়েন জমা হয়েছে! বর্তমান ব্যালেন্স: {new_bal}", parse_mode="Markdown")
             try:
                 await context.bot.send_message(chat_id=target_uid, text=f"🎉 পেমেন্ট কনফার্ম হয়েছে! অ্যাকাউন্টে **{add_coins} Coins** যোগ করা হয়েছে।\n💰 বর্তমান ব্যালেন্স: **{new_bal} Coins**", parse_mode="Markdown")
             except:
                 pass
             return
 
+    # ৩. Setup প্রসেস
     if text == "⚙️ Setup":
         context.user_data['setup_step'] = 'waiting_channel'
-        await update.message.reply_text("🔗 আপনার চ্যানেলের ইউজারনেম বা লিংক দিন (যেমন: `@rahulloohi` বা চ্যানেল লিংক):")
+        await message.reply_text("🔗 আপনার চ্যানেলের ইউজারনেম বা লিংক দিন (যেমন: `@rahulloohi` বা চ্যানেল লিংক):")
         return
 
     setup_step = context.user_data.get('setup_step')
@@ -401,13 +400,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data['temp_channel'] = clean_ch
         context.user_data['setup_step'] = 'waiting_reacts'
-        await update.message.reply_text("❤️ কত রিঅ্যাকশন নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
+        await message.reply_text("❤️ কত রিঅ্যাকশন নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
         return
     
     elif setup_step == 'waiting_reacts':
         context.user_data['temp_reacts'] = text
         context.user_data['setup_step'] = 'waiting_views'
-        await update.message.reply_text("👀 কত ভিউ নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
+        await message.reply_text("👀 কত ভিউ নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
         return
 
     elif setup_step == 'waiting_views':
@@ -423,9 +422,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         keyboard = get_admin_keyboard() if user_id == ADMIN_ID else get_user_keyboard()
-        await update.message.reply_text(f"✅ **সেটআপ সফলভাবে সেভ হয়েছে!**\n🔗 Link: {ch}\n❤️ Reacts: {reacts}\n👀 Views: {views}", reply_markup=keyboard, parse_mode="Markdown")
+        await message.reply_text(f"✅ **সেটআপ সফলভাবে সেভ হয়েছে!**\n🔗 Link: {ch}\n❤️ Reacts: {reacts}\n👀 Views: {views}", reply_markup=keyboard, parse_mode="Markdown")
         return
 
+    # ৪. Settings মেনু
     if text == "🛠️ Settings":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -454,9 +454,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(r_btn, callback_data="toggle_react"), InlineKeyboardButton(v_btn, callback_data="toggle_view")],
             [InlineKeyboardButton("✏️ Edit Settings", callback_data="edit_settings_btn")]
         ])
-        await update.message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
+        await message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
         return
 
+    # ৫. Order List
     if text == "📦 Order List":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -465,14 +466,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         if not orders:
-            await update.message.reply_text("📦 আপনার কোনো অর্ডার হিস্ট্রি পাওয়া যায়নি।")
+            await message.reply_text("📦 আপনার কোনো অর্ডার হিস্ট্রি পাওয়া যায়নি।")
         else:
             msg = "📦 **Your Order List:**\n\n"
             for o in orders:
                 msg += f"🆔 Order ID: `#{o[0]}`\n🔗 Link: {o[1]}\n📦 Qty: {o[2]} | Status: **{o[3]}**\n\n"
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await message.reply_text(msg, parse_mode="Markdown")
         return
 
+    # ৬. Profile, Top-up, Admin Panel
     if text == "👤 Profile":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -480,13 +482,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u = cursor.fetchone()
         conn.close()
         c, ts, ap, ref, ref_inc = u if u else (0, 0, 0, 0, 0)
-        await update.message.reply_text(f"👤 **User Profile**\n\n🆔 User ID: `{user_id}`\n💰 Coin Balance: {c}\n💸 Total Spent: {ts}\n🚀 Active Projects: {ap}", parse_mode="Markdown")
+        await message.reply_text(f"👤 **User Profile**\n\n🆔 User ID: `{user_id}`\n💰 Coin Balance: {c}\n💸 Total Spent: {ts}\n🚀 Active Projects: {ap}", parse_mode="Markdown")
         return
 
     if text == "💳 Top-up":
         binance_uid = get_setting("binance_uid")
         context.user_data['waiting_for_proof'] = True
-        await update.message.reply_text(f"💳 **Top-up Balance**\n\n📌 **Binance UID:** `{binance_uid}`\n\n📤 পেমেন্ট করে স্ক্রিনশট এখানে পাঠান।", parse_mode="Markdown")
+        await message.reply_text(f"💳 **Top-up Balance**\n\n📌 **Binance UID:** `{binance_uid}`\n\n📤 পেমেন্ট করে স্ক্রিনশট এখানে পাঠান।", parse_mode="Markdown")
         return
 
     if context.user_data.get('waiting_for_proof') or photo:
@@ -499,7 +501,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo[-1].file_id, caption=caption, reply_markup=admin_kb, parse_mode="Markdown")
                 else:
                     await context.bot.send_message(chat_id=ADMIN_ID, text=caption, reply_markup=admin_kb, parse_mode="Markdown")
-                await update.message.reply_text("✅ স্ক্রিনশট এডমিনের কাছে পাঠানো হয়েছে।")
+                await message.reply_text("✅ স্ক্রিনশট এডমিনের কাছে পাঠানো হয়েছে।")
             except:
                 pass
             return
@@ -509,16 +511,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"Premium Mode: {'ON 👑' if is_prem else 'OFF ❌'}", callback_data="toggle_premium_mode")]
         ])
-        await update.message.reply_text("👑 **Admin Control Panel**\n১-ক্লিকে প্রিমিয়াম বাটন অন/অফ করুন:", reply_markup=kb)
+        await message.reply_text("👑 **Admin Control Panel**\n১-ক্লিকে প্রিমিয়াম বাটন অন/অফ করুন:", reply_markup=kb)
         return
 
     if text == "🎧 Support":
-        await update.message.reply_text("🎧 যেকোনো সাহায্যে যোগাযোগ করুন: https://t.me/NIROB_GX")
+        await message.reply_text("🎧 যেকোনো সাহায্যে যোগাযোগ করুন: https://t.me/NIROB_GX")
         return
 
     if text == "👥 Refer & Earn":
         bot_username = (await context.bot.get_me()).username
-        await update.message.reply_text(f"👥 **Refer & Earn**\nআপনার লিঙ্ক: `https://t.me/{bot_username}?start={user_id}`", parse_mode="Markdown")
+        await message.reply_text(f"👥 **Refer & Earn**\nআপনার লিঙ্ক: `https://t.me/{bot_username}?start={user_id}`", parse_mode="Markdown")
         return
 
 def main():
@@ -527,13 +529,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_handler))
     
-    # গ্রুপ ও চ্যানেলের মেসেজ ফিল্টার সঠিকভাবে রেজিস্টার করা হলো
-    application.add_handler(MessageHandler(filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP | filters.IS_CHANNEL, group_post_handler))
-    
-    # সাধারণ বট চ্যাট মেসেজ হ্যান্ডলার
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND & ~filters.ChatType.GROUPS & ~filters.ChatType.SUPERGROUP, handle_message))
+    # সিঙ্গেল এবং ইউনিভার্সাল মেসেজ রাউটার হ্যান্ডলার যা ক্র্যাশ হ্যান্ডেল করবে
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_router))
 
-    print("GX SMM Final Absolute Fixed Bot is running successfully...")
+    print("GX SMM Ultimate Stable Bot is running successfully...")
     application.run_polling()
 
 if __name__ == "__main__":
