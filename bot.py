@@ -206,8 +206,9 @@ async def show_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
-# --- সেটআপ মেনু খোলার ফাংশন ---
-async def open_setup_menu(message_or_query, user_id, context):
+# --- সেটআপ মেনু খোলার ডেডিকেটেড ফাংশন ---
+async def open_setup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT channel_link, views_count, reacts_count FROM user_setups WHERE user_id = ?", (user_id,))
@@ -230,13 +231,11 @@ async def open_setup_menu(message_or_query, user_id, context):
         [InlineKeyboardButton("✅ Save Setup", callback_data="setup_save")]
     ])
 
-    if hasattr(message_or_query, 'edit_text'):
-        await message_or_query.edit_text(text, reply_markup=inline_kb, parse_mode="Markdown")
-    else:
-        await message_or_query.reply_text(text, reply_markup=inline_kb, parse_mode="Markdown")
+    await update.message.reply_text(text, reply_markup=inline_kb, parse_mode="Markdown")
 
-# --- সেটিংস কার্ড রেন্ডার করার ফাংশন ---
-async def render_settings_msg(query, user_id):
+# --- সেটিংস কার্ড দেখানোর ডেডিকেটেড ফাংশন ---
+async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT channel_link, react_service, view_service, reacts_count, views_count, emojis FROM user_setups WHERE user_id = ?", (user_id,))
@@ -265,10 +264,7 @@ async def render_settings_msg(query, user_id):
         [InlineKeyboardButton("✏️ Edit Settings", callback_data="edit_settings_btn")]
     ])
 
-    try:
-        await query.message.edit_text(card_text, reply_markup=kb, parse_mode="Markdown")
-    except:
-        await query.message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
+    await update.message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
 
 # --- কলারব্যাক হ্যান্ডলার ---
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -315,7 +311,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❤️ Reacts: {r_cnt} ({r_cost} Coins/post)"
         )
         await query.message.edit_text(saved_text, parse_mode="Markdown")
-        await show_dashboard(update, context)
+        
+        # ড্যাশবোর্ড আপডেট পাঠানো
+        dummy_update = Update(update.update_id, message=query.message)
+        await show_dashboard(dummy_update, context)
 
     elif data == "toggle_react":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
@@ -326,7 +325,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor.execute("UPDATE user_setups SET react_service = ? WHERE user_id = ?", (new_val, user_id))
         conn.commit()
         conn.close()
-        await render_settings_msg(query, user_id)
+        await render_settings_msg_inline(query, user_id)
 
     elif data == "toggle_view":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
@@ -337,10 +336,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor.execute("UPDATE user_setups SET view_service = ? WHERE user_id = ?", (new_val, user_id))
         conn.commit()
         conn.close()
-        await render_settings_msg(query, user_id)
+        await render_settings_msg_inline(query, user_id)
 
     elif data == "edit_settings_btn":
-        await open_setup_menu(query.message, user_id, context)
+        await open_setup_menu_inline(query, user_id)
 
     elif data.startswith("approve_pay_"):
         target_uid = data.split("_")[2]
@@ -353,6 +352,68 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_v = "False" if curr else "True"
         update_setting("is_premium", new_v)
         await query.answer(f"Premium Mode set to {new_v}", show_alert=True)
+
+async def render_settings_msg_inline(query, user_id):
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT channel_link, react_service, view_service, reacts_count, views_count, emojis FROM user_setups WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    ch, r_s, v_s, r_c, v_c, emo = row if row else ("Not set", "ON", "OFF", 500, 500, "👍 ❤️ 🔥")
+    ch_name = ch.split('/')[-1] if '/' in ch else ch
+
+    r_btn = f"👍 React: {r_s} {'✅' if r_s=='ON' else '❌'}"
+    v_btn = f"👁 Views: {v_s} {'✅' if v_s=='ON' else '❌'}"
+
+    card_text = (
+        f"🛠️ **Project Settings: {ch_name}**\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 **Link:** {ch}\n"
+        f"👍 **Reaction Service:** {r_s}\n"
+        f"👁 **View Service:** {v_s}\n"
+        f"🚀 **Reaction Count:** {r_c}\n"
+        f"👁 **View Count:** {v_c}\n"
+        f"😊 **Emoji:** POSITIVE {emo}"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(r_btn, callback_data="toggle_react"), InlineKeyboardButton(v_btn, callback_data="toggle_view")],
+        [InlineKeyboardButton("✏️ Edit Settings", callback_data="edit_settings_btn")]
+    ])
+
+    try:
+        await query.message.edit_text(card_text, reply_markup=kb, parse_mode="Markdown")
+    except:
+        await query.message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
+
+async def open_setup_menu_inline(query, user_id):
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT channel_link, views_count, reacts_count FROM user_setups WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    ch, views, reacts = row if row else ('Not set', 500, 500)
+
+    text = (
+        f"⚙️ **Setup Menu**\n\n"
+        f"🔗 Channel: {ch}\n"
+        f"👀 Views: {views}\n"
+        f"❤️ Reacts: {reacts}"
+    )
+
+    inline_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🔗 Channel: {ch}", callback_data="setup_set_channel")],
+        [InlineKeyboardButton(f"👀 Views: {views}", callback_data="setup_set_views"),
+         InlineKeyboardButton(f"❤️ Reacts: {reacts}", callback_data="setup_set_reacts")],
+        [InlineKeyboardButton("✅ Save Setup", callback_data="setup_save")]
+    ])
+
+    try:
+        await query.message.edit_text(text, reply_markup=inline_kb, parse_mode="Markdown")
+    except:
+        await query.message.reply_text(text, reply_markup=inline_kb, parse_mode="Markdown")
 
 # --- মূল মেসেজ ও পোস্ট হ্যান্ডলার ---
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -449,7 +510,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         await message.reply_text("✅ চ্যানেল লিংক সফলভাবে আপডেট হয়েছে!")
-        await open_setup_menu(message, user_id, context)
+        await open_setup_menu(update, context)
         return
 
     elif setup_step == 'inline_wait_views':
@@ -465,7 +526,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         await message.reply_text("✅ ভিউ সংখ্যা সফলভাবে আপডেট হয়েছে!")
-        await open_setup_menu(message, user_id, context)
+        await open_setup_menu(update, context)
         return
 
     elif setup_step == 'inline_wait_reacts':
@@ -481,7 +542,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         await message.reply_text("✅ রিঅ্যাকশন সংখ্যা সফলভাবে আপডেট হয়েছে!")
-        await open_setup_menu(message, user_id, context)
+        await open_setup_menu(update, context)
         return
 
     # ৩. এডমিন কয়েন অনুমোদন
@@ -583,34 +644,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(f"❌ এপিআই অর্ডার নিতে সমস্যা হয়েছে। আপনার কয়েন ফেরত দেওয়া হয়েছে।")
         return
 
-    # ৫. Setup বাটন ক্লিক করলে ইনলাইন মেনু ওপেন হবে
-    if text == "⚙️ Setup":
-        await open_setup_menu(message, user_id, context)
-        return
-
-    # ৬. Settings মেনু
-    if text == "🛠️ Settings":
-        await render_settings_msg(message, user_id)
-        return
-
-    # ৭. Order List
-    if text == "📦 Order List":
-        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT order_id, link, quantity, status FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 5", (user_id,))
-        orders = cursor.fetchall()
-        conn.close()
-
-        if not orders:
-            await message.reply_text("📦 আপনার কোনো অর্ডার হিস্ট্রি পাওয়া যায়নি।")
-        else:
-            msg = "📦 **Your Order List:**\n\n"
-            for o in orders:
-                msg += f"🆔 Order ID: `#{o[0]}`\n🔗 Link: {o[1]}\n📦 Qty: {o[2]} | Status: **{o[3]}**\n\n"
-            await message.reply_text(msg, parse_mode="Markdown")
-        return
-
-    # ৮. Profile, Top-up, Admin Panel
+    # ৫. অন্যান্য মেনু হ্যান্ডলার
     if text == "👤 Profile":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -659,15 +693,34 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(f"👥 **Refer & Earn**\nআপনার লিঙ্ক: `https://t.me/{bot_username}?start={user_id}`", parse_mode="Markdown")
         return
 
+    if text == "📦 Order List":
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT order_id, link, quantity, status FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 5", (user_id,))
+        orders = cursor.fetchall()
+        conn.close()
+
+        if not orders:
+            await message.reply_text("📦 আপনার কোনো অর্ডার হিস্ট্রি পাওয়া যায়নি।")
+        else:
+            msg = "📦 **Your Order List:**\n\n"
+            for o in orders:
+                msg += f"🆔 Order ID: `#{o[0]}`\n🔗 Link: {o[1]}\n📦 Qty: {o[2]} | Status: **{o[3]}**\n\n"
+            await message.reply_text(msg, parse_mode="Markdown")
+        return
+
 def main():
     application = ApplicationBuilder().token(TOKEN).build()
 
+    # ডেডিকেটেড কমান্ড এবং বাটন হ্যান্ডলার
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(callback_handler))
+    application.add_handler(MessageHandler(filters.Regex("^⚙️ Setup$"), open_setup_menu))
+    application.add_handler(MessageHandler(filters.Regex("^🛠️ Settings$"), open_settings_menu))
     
+    application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_router))
 
-    print("GX SMM Fully Fixed Working Bot is running successfully...")
+    print("GX SMM Ultimate Fixed Bot is running successfully...")
     application.run_polling()
 
 if __name__ == "__main__":
