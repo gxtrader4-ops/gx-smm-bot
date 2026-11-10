@@ -90,6 +90,16 @@ def update_setting(key, value):
     conn.commit()
     conn.close()
 
+# --- ক্লিন লিংক ফরম্যাটার (বাঁকা লিংক ফিক্স করার ফাংশন) ---
+def clean_telegram_link(raw_text):
+    text = raw_text.strip()
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+    if text.startswith("@"):
+        text = text[1:]
+    # ক্লিন সোজা লিংক তৈরি
+    return f"https://t.me/{text}"
+
 # --- 1xPanel API ---
 class OneXPanelAPI:
     def __init__(self, api_key):
@@ -108,13 +118,13 @@ class OneXPanelAPI:
 
 api_client = OneXPanelAPI(API_KEY)
 
-# --- কিবোর্ড সেটআপ ---
+# --- কিবোর্ড সেটআপ (TON Income বাটনসহ) ---
 def get_user_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("⚙️ Setup"), KeyboardButton("👤 Profile")],
         [KeyboardButton("🛠️ Settings"), KeyboardButton("💳 Top-up")],
         [KeyboardButton("📦 Order List"), KeyboardButton("🎧 Support")],
-        [KeyboardButton("👥 Refer & Earn")]
+        [KeyboardButton("💎 TON Income"), KeyboardButton("👥 Refer & Earn")]
     ], resize_keyboard=True)
 
 def get_admin_keyboard():
@@ -122,7 +132,8 @@ def get_admin_keyboard():
         [KeyboardButton("👑 Admin Panel"), KeyboardButton("⚙️ Setup")],
         [KeyboardButton("👤 Profile"), KeyboardButton("🛠️ Settings")],
         [KeyboardButton("💳 Top-up"), KeyboardButton("📦 Order List")],
-        [KeyboardButton("🎧 Support"), KeyboardButton("👥 Refer & Earn")]
+        [KeyboardButton("🎧 Support"), KeyboardButton("💎 TON Income")],
+        [KeyboardButton("👥 Refer & Earn")]
     ], resize_keyboard=True)
 
 async def check_forced_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -280,14 +291,14 @@ async def render_settings_msg(query, user_id):
 
     await query.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-# --- মূল মেসেজ ও পোস্ট হ্যান্ডলার ---
+# --- গ্রুপ বা চ্যানেলের পোস্ট হ্যান্ডলার (অটোমেটিক অর্ডারিং) ---
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     user_id = update.effective_user.id if update.effective_user else None
     text = message.text if message and message.text else ""
     photo = message.photo if message else None
 
-    # ১. যদি গ্রুপ বা চ্যানেলে পোস্ট হয় (অটো অর্ডার 1936)
+    # ১. গ্রুপ বা চ্যানেলে পোস্ট হলে (অটো অর্ডার 1936)
     if message and message.chat and message.chat.type in ["supergroup", "channel"]:
         if get_setting("global_orders") == "OFF":
             return
@@ -384,20 +395,96 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-    # ৩. Setup প্রসেস
+    # ৩. TON Income ম্যানুয়াল অর্ডার প্রসেস
+    if text == "💎 TON Income":
+        context.user_data['ton_step'] = 'waiting_post_link'
+        await message.reply_text("💎 **TON Income (One Click)**\n\n🔗 দয়া করে আপনার টেলিগ্রাম পোস্টের লিংক (Post Link) পাঠান:")
+        return
+
+    ton_step = context.user_data.get('ton_step')
+    if ton_step == 'waiting_post_link':
+        clean_post_link = clean_telegram_link(text)
+        context.user_data['ton_post_link'] = clean_post_link
+        context.user_data['ton_step'] = 'waiting_ton_reacts'
+        await message.reply_text("❤️ আপনি এই পোস্টে কত রিঅ্যাকশন নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 5000):")
+        return
+
+    elif ton_step == 'waiting_ton_reacts':
+        post_link = context.user_data.pop('ton_post_link', '')
+        context.user_data.pop('ton_step', None)
+        
+        reacts_count = text.strip()
+        if not reacts_count.isdigit():
+            await message.reply_text("❌ দয়া করে সঠিক সংখ্যা লিখুন (যেমন: 500)। আবার চেষ্টা করুন।")
+            return
+
+        r_qty = int(reacts_count)
+        cost = int((r_qty / 1000) * 3000)
+
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
+        urow = cursor.fetchone()
+        user_coins = urow[0] if urow else 0
+
+        if user_coins < cost:
+            conn.close()
+            await message.reply_text(f"⚠️ আপনার পর্যাপ্ত কয়েন নেই!\nআপনার আছে: {user_coins} Coins\nপ্রয়োজন: {cost} Coins\nদয়া করে টপ-আপ করুন।")
+            return
+
+        # কয়েন কেটে নেওয়া
+        cursor.execute("UPDATE users SET coins = coins - ?, total_spent = total_spent + ? WHERE user_id = ?", (cost, cost, user_id))
+        conn.commit()
+        conn.close()
+
+        # 1936 এপিআই অর্ডার হিট
+        order_data = {'service': 1936, 'link': post_link, 'quantity': r_qty}
+        api_res = api_client.order(order_data)
+
+        if isinstance(api_res, dict) and 'order' in api_res:
+            order_id = str(api_res['order'])
+            
+            conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO orders (user_id, order_id, link, quantity, status) VALUES (?, ?, ?, ?, ?)",
+                           (user_id, order_id, post_link, str(r_qty), "PENDING"))
+            conn.commit()
+            conn.close()
+
+            await message.reply_text(
+                f"✅ **TON Income অর্ডার সফলভাবে প্লেস হয়েছে!**\n\n"
+                f"🆔 Order ID: `#{order_id}`\n"
+                f"🔗 Link: {post_link}\n"
+                f"❤️ Reacts: {r_qty}\n"
+                f"🪙 খরচ হয়েছে: {cost} Coins",
+                parse_mode="Markdown"
+            )
+
+            # অর্ডার চ্যানেলে আপডেট
+            channel_text = f"ORDER UPDATE\n#{order_id}\nReacts|{r_qty}\nPENDING"
+            try:
+                await context.bot.send_message(chat_id=REQUIRED_CHANNEL, text=channel_text)
+            except:
+                pass
+        else:
+            # ফেল হলে কয়েন রিফান্ড
+            conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (cost, user_id))
+            conn.commit()
+            conn.close()
+            await message.reply_text(f"❌ এপিআই অর্ডার নিতে সমস্যা হয়েছে। আপনার কয়েন ফেরত দেওয়া হয়েছে। Response: {api_res}")
+        return
+
+    # ৪. Setup প্রসেস (ক্লিন লিংক ফরম্যাটার ব্যবহার করে সোজা লিংক সেভ করা)
     if text == "⚙️ Setup":
         context.user_data['setup_step'] = 'waiting_channel'
-        await message.reply_text("🔗 আপনার চ্যানেলের ইউজারনেম বা লিংক দিন (যেমন: `@rahulloohi` বা চ্যানেল লিংক):")
+        await message.reply_text("🔗 আপনার চ্যানেলের ইউজারনেম বা লিংক দিন (যেমন: `@mychannel` বা চ্যানেল লিংক):")
         return
 
     setup_step = context.user_data.get('setup_step')
     if setup_step == 'waiting_channel':
-        clean_ch = text.strip()
-        if clean_ch.startswith('@'):
-            clean_ch = f"https://t.me/{clean_ch[1:]}"
-        elif not clean_ch.startswith('http'):
-            clean_ch = f"https://t.me/{clean_ch}"
-
+        clean_ch = clean_telegram_link(text)
         context.user_data['temp_channel'] = clean_ch
         context.user_data['setup_step'] = 'waiting_reacts'
         await message.reply_text("❤️ কত রিঅ্যাকশন নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
@@ -425,7 +512,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(f"✅ **সেটআপ সফলভাবে সেভ হয়েছে!**\n🔗 Link: {ch}\n❤️ Reacts: {reacts}\n👀 Views: {views}", reply_markup=keyboard, parse_mode="Markdown")
         return
 
-    # ৪. Settings মেনু
+    # ৫. Settings মেনু
     if text == "🛠️ Settings":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -457,7 +544,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
         return
 
-    # ৫. Order List
+    # ৬. Order List
     if text == "📦 Order List":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -474,7 +561,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(msg, parse_mode="Markdown")
         return
 
-    # ৬. Profile, Top-up, Admin Panel
+    # ৭. Profile, Top-up, Admin Panel
     if text == "👤 Profile":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -529,10 +616,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_handler))
     
-    # সিঙ্গেল এবং ইউনিভার্সাল মেসেজ রাউটার হ্যান্ডলার যা ক্র্যাশ হ্যান্ডেল করবে
+    # ইউনিভার্সাল মেসেজ রাউটার হ্যান্ডলার
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_router))
 
-    print("GX SMM Ultimate Stable Bot is running successfully...")
+    print("GX SMM TON Income Bot is running successfully...")
     application.run_polling()
 
 if __name__ == "__main__":
