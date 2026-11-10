@@ -1,7 +1,6 @@
 import logging
 import sqlite3
 import requests
-import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -28,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # --- ডাটাবেস সেটাপ ---
 def init_db():
-    conn = sqlite3.connect("smm_bot.db")
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -50,7 +49,7 @@ def init_db():
 init_db()
 
 def get_setting(key):
-    conn = sqlite3.connect("smm_bot.db")
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
     row = cursor.fetchone()
@@ -58,7 +57,7 @@ def get_setting(key):
     return row[0] if row else ""
 
 def update_setting(key, value):
-    conn = sqlite3.connect("smm_bot.db")
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
     conn.commit()
@@ -74,7 +73,7 @@ class OneXPanelAPI:
         post = {'key': self.api_key, 'action': 'add'}
         post.update(data)
         try:
-            response = requests.post(self.api_url, data=post)
+            response = requests.post(self.api_url, data=post, timeout=15)
             return response.json()
         except Exception as e:
             logger.error(f"API Order Error: {e}")
@@ -83,20 +82,11 @@ class OneXPanelAPI:
     def services(self):
         post = {'key': self.api_key, 'action': 'services'}
         try:
-            response = requests.post(self.api_url, data=post)
+            response = requests.post(self.api_url, data=post, timeout=15)
             return response.json()
         except Exception as e:
             logger.error(f"API Services Error: {e}")
             return []
-
-    def status(self, order_id):
-        post = {'key': self.api_key, 'action': 'status', 'order': order_id}
-        try:
-            response = requests.post(self.api_url, data=post)
-            return response.json()
-        except Exception as e:
-            logger.error(f"API Status Error: {e}")
-            return {}
 
 api_client = OneXPanelAPI(API_KEY)
 
@@ -117,7 +107,7 @@ async def check_forced_join(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    conn = sqlite3.connect("smm_bot.db")
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO users (user_id, coins) VALUES (?, ?)", (user_id, 100))
     conn.commit()
@@ -139,7 +129,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    conn = sqlite3.connect("smm_bot.db")
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -177,7 +167,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("❌ আপনি এখনো গ্রুপে জয়েন করেননি!", show_alert=True)
 
     elif query.data == "profile":
-        conn = sqlite3.connect("smm_bot.db")
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
@@ -267,7 +257,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_user = int(parts[0])
             new_coins = int(parts[1])
             
-            conn = sqlite3.connect("smm_bot.db")
+            conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute("INSERT OR REPLACE INTO users (user_id, coins) VALUES (?, ?)", (target_user, new_coins))
             conn.commit()
@@ -294,7 +284,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rate_multiplier = int(get_setting("rate_multiplier") or 5)
         required_coins = quantity * rate_multiplier
 
-        conn = sqlite3.connect("smm_bot.db")
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
@@ -326,7 +316,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Channel notification error: {e}")
         else:
-            conn = sqlite3.connect("smm_bot.db")
+            conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (required_coins, user_id))
             conn.commit()
