@@ -108,7 +108,7 @@ class OneXPanelAPI:
 
 api_client = OneXPanelAPI(API_KEY)
 
-# --- ইউজার এবং এডমিন আলাদা কিবোর্ড ---
+# --- কিবোর্ড সেটআপ ---
 def get_user_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("⚙️ Setup"), KeyboardButton("👤 Profile")],
@@ -279,52 +279,57 @@ async def render_settings_msg(query, user_id):
 
 # --- প্রধান মেসেজ হ্যান্ডলার ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    photo = update.message.photo
+    user_id = update.effective_user.id if update.effective_user else None
+    text = update.message.text if update.message and update.message.text else ""
+    photo = update.message.photo if update.message else None
 
     # ১. গ্রুপ বা চ্যানেলে নতুন পোস্ট আসলে অটোমেটিক 1936 এ অর্ডার প্লেস হওয়া
-    if update.message.chat.type in ["supergroup", "channel"]:
+    if update.message and update.message.chat.type in ["supergroup", "channel"]:
         if get_setting("global_orders") == "OFF":
             return
         
+        # পোস্ট হওয়া চ্যানেল বা গ্রুপের ইউজারনেম বা আইডি থেকে সঠিক লিংক তৈরি
+        chat = update.message.chat
+        if chat.username:
+            post_link = f"https://t.me/{chat.username}/{update.message.message_id}"
+        else:
+            clean_id = str(chat.id).replace("-100", "")
+            post_link = f"https://t.me/c/{clean_id}/{update.message.message_id}"
+
+        # যদি চ্যাটে ইউজার আইডি সরাসরি না পাওয়া যায়, তবে ডেটাবেস থেকে এডমিন বা ডিফল্ট প্রজেক্ট ইউজার ধরতে হবে
+        # অথবা গ্রুপের যেকোনোভবে অর্ডার জেনারেট করা
+        target_user_id = user_id if user_id else ADMIN_ID
+
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
+        cursor.execute("SELECT coins FROM users WHERE user_id = ?", (target_user_id,))
         user_row = cursor.fetchone()
         current_coins = user_row[0] if user_row else 0
         
-        cursor.execute("SELECT reacts_count, views_count, react_service, view_service FROM user_setups WHERE user_id = ?", (user_id,))
+        cursor.execute("SELECT reacts_count, views_count, reacts_count, views_count FROM user_setups WHERE user_id = ?", (target_user_id,))
         setup_row = cursor.fetchone()
         
-        reacts_qty = int(setup_row[0]) if setup_row and str(setup_row[0]).isdigit() else 0
-        views_qty = int(setup_row[1]) if setup_row and str(setup_row[1]).isdigit() else 0
-        r_service = setup_row[2] if setup_row else "ON"
-        v_service = setup_row[3] if setup_row else "OFF"
+        reacts_qty = int(setup_row[0]) if setup_row and str(setup_row[0]).isdigit() else 500
+        views_qty = int(setup_row[1]) if setup_row and str(setup_row[1]).isdigit() else 500
 
-        # কয়েন হিসাব: ১০০০ রিঅ্যাকশন = ৩০০০ কয়েন, ১০০০ ভিউ = ২০০০ কয়েন
-        react_cost = (reacts_qty * 3) if r_service == "ON" else 0
-        view_cost = (views_qty * 2) if v_service == "ON" else 0
-        total_cost_coins = react_cost + view_cost
+        # খরচ হিসাব: ১০০০ রিঅ্যাকশন = ৩০০০ কয়েন, ১০০০ ভিউ = ২০০০ কয়েন
+        total_cost_coins = int((reacts_qty / 1000) * 3000) + int((views_qty / 1000) * 2000)
 
-        if current_coins < total_cost_coins or total_cost_coins == 0:
+        if current_coins < total_cost_coins:
             try:
                 await context.bot.send_message(
-                    chat_id=user_id, 
-                    text=f"⚠️ **অর্ডার ফেইলড!** আপনার পর্যাপ্ত কয়েন নেই বা সেটআপ করা হয়নি।\nআপনার বর্তমান ব্যালেন্স: **{current_coins} Coins**\nপ্রয়োজন: **{total_cost_coins} Coins**\nদয়া করে Top-up করে কয়েন অ্যাড করুন।"
+                    chat_id=target_user_id, 
+                    text=f"⚠️ **অর্ডার ফেইলড!** আপনার পর্যাপ্ত কয়েন নেই।\nবর্তমান ব্যালেন্স: **{current_coins} Coins**\nপ্রয়োজন: **{total_cost_coins} Coins**"
                 )
             except:
                 pass
             conn.close()
             return
 
-        # ব্যালেন্স থেকে কয়েন কাটা
-        cursor.execute("UPDATE users SET coins = coins - ?, total_spent = total_spent + ? WHERE user_id = ?", (total_cost_coins, total_cost_coins, user_id))
+        cursor.execute("UPDATE users SET coins = coins - ?, total_spent = total_spent + ? WHERE user_id = ?", (total_cost_coins, total_cost_coins, target_user_id))
         conn.commit()
         conn.close()
 
-        post_link = f"https://t.me/{update.message.chat.username}/{update.message.message_id}" if update.message.chat.username else f"https://t.me/c/{str(update.message.chat.id).replace('-100', '')}/{update.message.message_id}"
-        
         # 1936 এপিআই অর্ডার হিট
         order_data = {'service': 1936, 'link': post_link, 'quantity': reacts_qty}
         api_res = api_client.order(order_data)
@@ -335,26 +340,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute("INSERT INTO orders (user_id, order_id, link, quantity, status) VALUES (?, ?, ?, ?, ?)",
-                           (user_id, order_id, post_link, str(reacts_qty), "PENDING"))
+                           (target_user_id, order_id, post_link, str(reacts_qty), "PENDING"))
             conn.commit()
             conn.close()
 
-            # ইউজারের ইনবক্সে নোটিফিকেশন
             try:
                 await context.bot.send_message(
-                    chat_id=user_id,
+                    chat_id=target_user_id,
                     text=f"🚀 **অর্ডার পেন্ডিং আছে!**\n\n🆔 Order ID: `#{order_id}`\n❤️ Reacts: {reacts_qty}\n👀 Views: {views_qty}\n🔗 Link: {post_link}\n🪙 খরচ হয়েছে: {total_cost_coins} Coins",
                     parse_mode="Markdown"
                 )
             except:
                 pass
 
-            # অর্ডার চ্যানেলে আপডেট
             channel_text = f"ORDER UPDATE\n#{order_id}\nReacts|{reacts_qty}\nPENDING"
             try:
                 await context.bot.send_message(chat_id=REQUIRED_CHANNEL, text=channel_text)
             except Exception as e:
                 logger.error(f"Error sending to order channel: {e}")
+        return
+
+    if not update.message or not update.message.text:
         return
 
     # ২. এডমিন কয়েন অনুমোদন
@@ -379,15 +385,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-    # ৩. Setup প্রসেস (ক্লিন ও সোজা ইউজারনেম ইনপুট)
+    # ৩. Setup প্রসেস
     if text == "⚙️ Setup":
         context.user_data['setup_step'] = 'waiting_channel'
-        await update.message.reply_text("🔗 আপনার চ্যানেলের ইউজারনেম বা লিংক দিন (যেমন: `@mychannel` বা চ্যানেল লিংক):")
+        await update.message.reply_text("🔗 আপনার চ্যানেলের ইউজারনেম বা লিংক দিন (যেমন: `@rahulloohi` বা চ্যানেলের লিংক):")
         return
 
     setup_step = context.user_data.get('setup_step')
     if setup_step == 'waiting_channel':
-        context.user_data['temp_channel'] = text
+        # সঠিক ফরম্যাটে লিংক কনভার্ট করা
+        clean_ch = text.strip()
+        if clean_ch.startswith('@'):
+            clean_ch = f"https://t.me/{clean_ch[1:]}"
+        elif not clean_ch.startswith('http'):
+            clean_ch = f"https://t.me/{clean_ch}"
+
+        context.user_data['temp_channel'] = clean_ch
         context.user_data['setup_step'] = 'waiting_reacts'
         await update.message.reply_text("❤️ কত রিঅ্যাকশন নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
         return
@@ -400,7 +413,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif setup_step == 'waiting_views':
         ch = context.user_data.pop('temp_channel', 'Not set')
-        reacts = context.user_data.pop('temp_reacts', 0)
+        reacts = context.user_data.pop('temp_reacts', 500)
         views = text
         context.user_data.pop('setup_step', None)
 
@@ -414,7 +427,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ **সেটআপ সফলভাবে সেভ হয়েছে!**\n🔗 Link: {ch}\n❤️ Reacts: {reacts}\n👀 Views: {views}", reply_markup=keyboard, parse_mode="Markdown")
         return
 
-    # ৪. Settings মেনু (প্রজেক্ট সেটিংস কার্ড)
+    # ৪. Settings মেনু
     if text == "🛠️ Settings":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -422,7 +435,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = cursor.fetchone()
         conn.close()
 
-        ch, r_s, v_s, r_c, v_c, emo = row if row else ("Not set", "ON", "OFF", 0, 0, "👍 ❤️ 🔥")
+        ch, r_s, v_s, r_c, v_c, emo = row if row else ("Not set", "ON", "OFF", 500, 500, "👍 ❤️ 🔥")
         ch_name = ch.split('/')[-1] if '/' in ch else ch
 
         r_btn = f"👍 React: {r_s} {'✅' if r_s=='ON' else '❌'}"
@@ -446,7 +459,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
         return
 
-    # ৫. Order List (শুধু ইউজারের নিজের অর্ডার দেখাবে)
+    # ৫. Order List
     if text == "📦 Order List":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -517,9 +530,10 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_handler))
-    application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
+    # সমস্ত চ্যাট, গ্রুপ এবং চ্যানেলের মেসেজ ট্র্যাক করার ফিল্টার
+    application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.UpdateType.MESSAGES) & ~filters.COMMAND, handle_message))
 
-    print("GX SMM Final Ultimate Bot is running successfully...")
+    print("GX SMM Final Fixed Bot is running successfully...")
     application.run_polling()
 
 if __name__ == "__main__":
