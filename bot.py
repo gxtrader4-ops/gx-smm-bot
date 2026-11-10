@@ -291,20 +291,16 @@ async def group_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if get_setting("global_orders") == "OFF":
             return
         
-        # সঠিক পোস্ট লিংক ফরম্যাট তৈরি
         if chat.username:
             post_link = f"https://t.me/{chat.username}/{message.message_id}"
         else:
             clean_id = str(chat.id).replace("-100", "")
             post_link = f"https://t.me/c/{clean_id}/{message.message_id}"
 
-        # এই গ্রুপ বা চ্যানেলের সাথে বাইন্ড করা ইউজার খোঁজা অথবা এডমিন আইডি দিয়ে অর্ডার প্লেস করা
-        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
-        cursor = conn.cursor()
-        
-        # চ্যাট আইডি বা ইউজারনেম দিয়ে ডেটাবেস থেকে প্রজেক্ট ওনার বা এডমিনকে টার্গেট করা
         target_user_id = ADMIN_ID
         
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
         cursor.execute("SELECT coins FROM users WHERE user_id = ?", (target_user_id,))
         user_row = cursor.fetchone()
         current_coins = user_row[0] if user_row else 0
@@ -332,7 +328,6 @@ async def group_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         conn.commit()
         conn.close()
 
-        # 1xPanel (Service ID 1936) এ অর্ডার পাঠানো
         order_data = {'service': 1936, 'link': post_link, 'quantity': reacts_qty}
         api_res = api_client.order(order_data)
         
@@ -346,7 +341,6 @@ async def group_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             conn.commit()
             conn.close()
 
-            # ইনবক্স নোটিফিকেশন
             try:
                 await context.bot.send_message(
                     chat_id=target_user_id,
@@ -356,7 +350,6 @@ async def group_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except:
                 pass
 
-            # নির্দিষ্ট অর্ডার চ্যানেলে আপডেট পাঠানো
             channel_text = f"ORDER UPDATE\n#{order_id}\nReacts|{reacts_qty}\nPENDING"
             try:
                 await context.bot.send_message(chat_id=REQUIRED_CHANNEL, text=channel_text)
@@ -372,7 +365,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    # ১. এডমিন কয়েন অনুমোদন
     if user_id == ADMIN_ID and context.user_data.get('waiting_admin_coin_input'):
         target_uid = context.user_data.pop('target_user_for_coins', None)
         context.user_data['waiting_admin_coin_input'] = False
@@ -394,7 +386,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-    # ২. Setup প্রসেস (ক্লিন লিংক ফরম্যাটিং)
     if text == "⚙️ Setup":
         context.user_data['setup_step'] = 'waiting_channel'
         await update.message.reply_text("🔗 আপনার চ্যানেলের ইউজারনেম বা লিংক দিন (যেমন: `@rahulloohi` বা চ্যানেল লিংক):")
@@ -435,7 +426,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ **সেটআপ সফলভাবে সেভ হয়েছে!**\n🔗 Link: {ch}\n❤️ Reacts: {reacts}\n👀 Views: {views}", reply_markup=keyboard, parse_mode="Markdown")
         return
 
-    # ৩. Settings মেনু
     if text == "🛠️ Settings":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -467,7 +457,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
         return
 
-    # ৪. Order List
     if text == "📦 Order List":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -484,7 +473,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
-    # ৫. Profile, Top-up, Admin Panel
     if text == "👤 Profile":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -539,11 +527,11 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_handler))
     
-    # গ্রুপ বা চ্যানেলের পোস্ট ট্র্যাকিং হ্যান্ডলার আলাদা করা হলো যাতে ১ সেকেন্ডের মধ্যে কাজ করে
-    application.add_handler(MessageHandler(filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP | filters.Channel(), group_post_handler))
+    # গ্রুপ ও চ্যানেলের মেসেজ ফিল্টার সঠিকভাবে রেজিস্টার করা হলো
+    application.add_handler(MessageHandler(filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP | filters.IS_CHANNEL, group_post_handler))
     
     # সাধারণ বট চ্যাট মেসেজ হ্যান্ডলার
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND & ~filters.ChatType.GROUPS, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND & ~filters.ChatType.GROUPS & ~filters.ChatType.SUPERGROUP, handle_message))
 
     print("GX SMM Final Absolute Fixed Bot is running successfully...")
     application.run_polling()
