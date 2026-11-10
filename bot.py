@@ -90,7 +90,7 @@ def update_setting(key, value):
     conn.commit()
     conn.close()
 
-# --- ১০০% নিখুঁত লিংক ক্লিনার (আন্ডারস্কোর ও স্পেশাল ক্যারেক্টার অক্ষুণ্ণ রাখবে) ---
+# --- নিখুঁত লিংক ক্লিনার ---
 def clean_telegram_link(raw_text):
     text = raw_text.strip()
     if text.startswith("http://") or text.startswith("https://"):
@@ -117,7 +117,7 @@ class OneXPanelAPI:
 
 api_client = OneXPanelAPI(API_KEY)
 
-# --- মূল রিপ্লাই কিবোর্ড ---
+# --- কিবোর্ড সেটআপ ---
 def get_user_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("⚙️ Setup"), KeyboardButton("👤 Profile")],
@@ -206,8 +206,8 @@ async def show_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
-# --- ভিডিওর মতো ইনলাইন সেটআপ মেনু ওপেন করার ফাংশন ---
-async def open_setup_menu(query_or_message, user_id, context):
+# --- সেটআপ মেনু খোলার ফাংশন ---
+async def open_setup_menu(message_or_query, user_id, context):
     conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT channel_link, views_count, reacts_count FROM user_setups WHERE user_id = ?", (user_id,))
@@ -230,10 +230,10 @@ async def open_setup_menu(query_or_message, user_id, context):
         [InlineKeyboardButton("✅ Save Setup", callback_data="setup_save")]
     ])
 
-    if hasattr(query_or_message, 'edit_text'):
-        await query_or_message.edit_text(text, reply_markup=inline_kb, parse_mode="Markdown")
+    if hasattr(message_or_query, 'edit_text'):
+        await message_or_query.edit_text(text, reply_markup=inline_kb, parse_mode="Markdown")
     else:
-        await query_or_message.reply_text(text, reply_markup=inline_kb, parse_mode="Markdown")
+        await message_or_query.reply_text(text, reply_markup=inline_kb, parse_mode="Markdown")
 
 # --- কলারব্যাক হ্যান্ডলার ---
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,7 +251,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "setup_set_channel":
         context.user_data['setup_step'] = 'inline_wait_channel'
-        await query.message.reply_text("🔗 আপনার চ্যানেলের বা গ্রুপের লিংক/ইউজারনেম দিন (যেমন: `@GX_BIG_COMMUNITY` বা লিংক):")
+        await query.message.reply_text("🔗 আপনার চ্যানেলের বা গ্রুপের লিংক/ইউজারনেম দিন (যেমন: `@GX_BIG_COMMUNITY`):")
 
     elif data == "setup_set_views":
         context.user_data['setup_step'] = 'inline_wait_views'
@@ -270,11 +270,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         ch, v_cnt, r_cnt = row if row else ('Not set', 500, 500)
         
-        # খরচ হিসাব (১০০০ ভিউ = ২০০০ কয়েন, ১০০০ রিঅ্যাকশন = ৩০০০ কয়েন)
         v_cost = int((int(v_cnt) / 1000) * 2000)
         r_cost = int((int(r_cnt) / 1000) * 3000)
 
-        # ভিডিওর মতো এক্স্যাক্ট সফল সেভ মেসেজ
         saved_text = (
             f"✅ **Setup Saved!**\n\n"
             f"📡 {ch}\n"
@@ -303,7 +301,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = message.text if message and message.text else ""
     photo = message.photo if message else None
 
-    # ১. গ্রুপ বা চ্যানেলে পোস্ট হলে অটো অর্ডার (Service 1936)
+    # ১. গ্রুপ বা চ্যানেলে পোস্ট হলে অটো অর্ডার (Fallback সহ যাতে সেটআপ না করলেও চলে)
     if message and message.chat and message.chat.type in ["supergroup", "channel"]:
         if get_setting("global_orders") == "OFF":
             return
@@ -378,7 +376,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_id:
         return
 
-    # ২. ইনলাইন সেটআপ স্টেপ হ্যান্ডলিং (Channel, Views, Reacts ইনপুট - কোনো বাঁকা লিংক হবে না)
+    # ২. ইনলাইন সেটআপ ইনপুট হ্যান্ডলিং
     setup_step = context.user_data.get('setup_step')
     if setup_step == 'inline_wait_channel':
         clean_ch = clean_telegram_link(text)
@@ -525,7 +523,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(f"❌ এপিআই অর্ডার নিতে সমস্যা হয়েছে। আপনার কয়েন ফেরত দেওয়া হয়েছে।")
         return
 
-    # ৫. Setup বাটন ক্লিক করলে ভিডিওর মতো ইনলাইন সেটআপ মেনু ওপেন হবে
+    # ৫. Setup বাটন ক্লিক করলে সরাসরি ভিডিওর মতো ইনলাইন মেনু ওপেন হবে
     if text == "⚙️ Setup":
         await open_setup_menu(message, user_id, context)
         return
@@ -636,7 +634,7 @@ def main():
     
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_router))
 
-    print("GX SMM Video Style Inline Setup Bot is running successfully...")
+    print("GX SMM Ultimate Working Bot is running successfully...")
     application.run_polling()
 
 if __name__ == "__main__":
