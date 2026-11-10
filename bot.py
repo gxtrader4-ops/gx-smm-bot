@@ -235,6 +235,41 @@ async def open_setup_menu(message_or_query, user_id, context):
     else:
         await message_or_query.reply_text(text, reply_markup=inline_kb, parse_mode="Markdown")
 
+# --- সেটিংস কার্ড রেন্ডার করার ফাংশন ---
+async def render_settings_msg(query, user_id):
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT channel_link, react_service, view_service, reacts_count, views_count, emojis FROM user_setups WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    ch, r_s, v_s, r_c, v_c, emo = row if row else ("Not set", "ON", "OFF", 500, 500, "👍 ❤️ 🔥")
+    ch_name = ch.split('/')[-1] if '/' in ch else ch
+
+    r_btn = f"👍 React: {r_s} {'✅' if r_s=='ON' else '❌'}"
+    v_btn = f"👁 Views: {v_s} {'✅' if v_s=='ON' else '❌'}"
+
+    card_text = (
+        f"🛠️ **Project Settings: {ch_name}**\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 **Link:** {ch}\n"
+        f"👍 **Reaction Service:** {r_s}\n"
+        f"👁 **View Service:** {v_s}\n"
+        f"🚀 **Reaction Count:** {r_c}\n"
+        f"👁 **View Count:** {v_c}\n"
+        f"😊 **Emoji:** POSITIVE {emo}"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(r_btn, callback_data="toggle_react"), InlineKeyboardButton(v_btn, callback_data="toggle_view")],
+        [InlineKeyboardButton("✏️ Edit Settings", callback_data="edit_settings_btn")]
+    ])
+
+    try:
+        await query.message.edit_text(card_text, reply_markup=kb, parse_mode="Markdown")
+    except:
+        await query.message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
+
 # --- কলারব্যাক হ্যান্ডলার ---
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -282,6 +317,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(saved_text, parse_mode="Markdown")
         await show_dashboard(update, context)
 
+    elif data == "toggle_react":
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT react_service FROM user_setups WHERE user_id = ?", (user_id,))
+        curr = cursor.fetchone()[0]
+        new_val = "OFF" if curr == "ON" else "ON"
+        cursor.execute("UPDATE user_setups SET react_service = ? WHERE user_id = ?", (new_val, user_id))
+        conn.commit()
+        conn.close()
+        await render_settings_msg(query, user_id)
+
+    elif data == "toggle_view":
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT view_service FROM user_setups WHERE user_id = ?", (user_id,))
+        curr = cursor.fetchone()[0]
+        new_val = "OFF" if curr == "ON" else "ON"
+        cursor.execute("UPDATE user_setups SET view_service = ? WHERE user_id = ?", (new_val, user_id))
+        conn.commit()
+        conn.close()
+        await render_settings_msg(query, user_id)
+
+    elif data == "edit_settings_btn":
+        await open_setup_menu(query.message, user_id, context)
+
     elif data.startswith("approve_pay_"):
         target_uid = data.split("_")[2]
         context.user_data['target_user_for_coins'] = target_uid
@@ -301,7 +361,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = message.text if message and message.text else ""
     photo = message.photo if message else None
 
-    # ১. গ্রুপ বা চ্যানেলে পোস্ট হলে অটো অর্ডার (Fallback সহ যাতে সেটআপ না করলেও চলে)
+    # ১. গ্রুপ বা চ্যানেলে পোস্ট হলে অটো অর্ডার (Service 1936)
     if message and message.chat and message.chat.type in ["supergroup", "channel"]:
         if get_setting("global_orders") == "OFF":
             return
@@ -523,41 +583,14 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(f"❌ এপিআই অর্ডার নিতে সমস্যা হয়েছে। আপনার কয়েন ফেরত দেওয়া হয়েছে।")
         return
 
-    # ৫. Setup বাটন ক্লিক করলে সরাসরি ভিডিওর মতো ইনলাইন মেনু ওপেন হবে
+    # ৫. Setup বাটন ক্লিক করলে ইনলাইন মেনু ওপেন হবে
     if text == "⚙️ Setup":
         await open_setup_menu(message, user_id, context)
         return
 
     # ৬. Settings মেনু
     if text == "🛠️ Settings":
-        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT channel_link, react_service, view_service, reacts_count, views_count, emojis FROM user_setups WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        conn.close()
-
-        ch, r_s, v_s, r_c, v_c, emo = row if row else ("Not set", "ON", "OFF", 500, 500, "👍 ❤️ 🔥")
-        ch_name = ch.split('/')[-1] if '/' in ch else ch
-
-        r_btn = f"👍 React: {r_s} {'✅' if r_s=='ON' else '❌'}"
-        v_btn = f"👁 Views: {v_s} {'✅' if v_s=='ON' else '❌'}"
-
-        card_text = (
-            f"🛠️ **Project Settings: {ch_name}**\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"🔗 **Link:** {ch}\n"
-            f"👍 **Reaction Service:** {r_s}\n"
-            f"👁 **View Service:** {v_s}\n"
-            f"🚀 **Reaction Count:** {r_c}\n"
-            f"👁 **View Count:** {v_c}\n"
-            f"😊 **Emoji:** POSITIVE {emo}"
-        )
-
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(r_btn, callback_data="toggle_react"), InlineKeyboardButton(v_btn, callback_data="toggle_view")],
-            [InlineKeyboardButton("✏️ Edit Settings", callback_data="edit_settings_btn")]
-        ])
-        await message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
+        await render_settings_msg(message, user_id)
         return
 
     # ৭. Order List
@@ -634,7 +667,7 @@ def main():
     
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_router))
 
-    print("GX SMM Ultimate Working Bot is running successfully...")
+    print("GX SMM Fully Fixed Working Bot is running successfully...")
     application.run_polling()
 
 if __name__ == "__main__":
