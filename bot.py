@@ -1,6 +1,7 @@
 import logging
 import sqlite3
 import requests
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -145,7 +146,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     coins = row[0] if row else 0
 
-    # ইউজার প্যানেলের বাটনসমূহ
     keyboard = [
         [InlineKeyboardButton("🛒 New Order (Reaction/View)", callback_data="new_order")],
         [InlineKeyboardButton("👤 My Profile", callback_data="profile"),
@@ -163,7 +163,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
-# --- কলারব্যাক হ্যান্ডলার (বাটন প্রেস ম্যানেজমেন্ট) ---
+# --- কলারব্যাক হ্যান্ডলার ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -227,7 +227,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "admin_panel":
         if user_id != ADMIN_ID:
             return
-        # এডমিন প্যানেলের বাটনসমূহ
         keyboard = [
             [InlineKeyboardButton("🪙 Set User Coins", callback_data="adm_set_user_coins"),
              InlineKeyboardButton("🎚️ Change Coin Rate", callback_data="adm_set_rate")],
@@ -244,7 +243,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "adm_set_user_coins":
         context.user_data['waiting_for_user_coin_update'] = True
         keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="admin_panel")]]
-        await query.message.reply_text("ইউজার আইডি এবং কয়েন এভাবে দিন (ഉদাহারণ: `123456789 500`):", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.message.reply_text("ইউজার আইডি এবং কয়েন এভাবে দিন (উদাহরণ: `123456789 500`):", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif query.data == "adm_set_binance":
         context.user_data['waiting_for_binance_update'] = True
@@ -256,14 +255,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
-    # এডমিন: কয়েন রেট আপডেট
     if user_id == ADMIN_ID and context.user_data.get('waiting_for_admin_rate'):
         update_setting('rate_multiplier', text)
         context.user_data['waiting_for_admin_rate'] = False
         await update.message.reply_text(f"✅ কয়েন রেট সফলভাবে আপডেট করা হয়েছে: {text}")
         return
 
-    # এডমিন: ইউজারের কয়েন সেট করা
     if user_id == ADMIN_ID and context.user_data.get('waiting_for_user_coin_update'):
         try:
             parts = text.split()
@@ -282,20 +279,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ সঠিক ফরম্যাটে লিখুন। উদাহরণ: `123456789 500`", parse_mode="Markdown")
         return
 
-    # এডমিন: বাইনান্স আইডি আপডেট
     if user_id == ADMIN_ID and context.user_data.get('waiting_for_binance_update'):
         update_setting('binance_id', text)
         context.user_data['waiting_for_binance_update'] = False
         await update.message.reply_text(f"✅ বাইনান্স আইডি সফলভাবে আপডেট করা হয়েছে: {text}")
         return
 
-    # সাধারণ ইউজার অর্ডার লিংক দিলে অর্ডার প্লেস করা
     if context.user_data.get('waiting_for_link'):
         context.user_data['waiting_for_link'] = False
         service_id = context.user_data.get('selected_service')
         link = text
 
-        quantity = 1000  # ডিফল্ট ১০০০ রিঅ্যাকশন/ভিউ
+        quantity = 1000
         rate_multiplier = int(get_setting("rate_multiplier") or 5)
         required_coins = quantity * rate_multiplier
 
@@ -310,12 +305,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ আপনার পর্যাপ্ত কয়েন নেই! আপনার আছে **{user_coins}** কয়েন, প্রয়োজন **{required_coins}** কয়েন।")
             return
 
-        # কয়েন কেটে নেওয়া
         cursor.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (required_coins, user_id))
         conn.commit()
         conn.close()
 
-        # 1xPanel এপিআই এ অর্ডার পাঠানো
         order_data = {
             'service': service_id,
             'link': link,
@@ -327,14 +320,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             order_id = api_response['order']
             await update.message.reply_text(f"✅ **অর্ডার সফলভাবে প্লেস হয়েছে!**\n\n🆔 Order ID: `{order_id}`\n📌 Status: Pending\n🪙 খরচ হয়েছে: **{required_coins}** কয়েন", parse_mode="Markdown")
             
-            # অর্ডার গ্রুপে নোটিফিকেশন পাঠানো
             try:
                 channel_msg = f"🚀 **New SMM Order Placed!**\n\n👤 User ID: `{user_id}`\n🆔 Order ID: `{order_id}`\n🔗 Link: {link}\n📦 Quantity: {quantity}"
                 await context.bot.send_message(chat_id=REQUIRED_CHANNEL, text=channel_msg, parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"Channel notification error: {e}")
         else:
-            # অর্ডার ফেল করলে কয়েন রিফান্ড করা
             conn = sqlite3.connect("smm_bot.db")
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (required_coins, user_id))
@@ -349,9 +340,8 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("SMM Bot with full buttons and 1xPanel API is running successfully...")
+    print("SMM Bot is running successfully...")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
-  
