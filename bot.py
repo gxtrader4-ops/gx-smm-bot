@@ -50,8 +50,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS user_setups (
             user_id INTEGER PRIMARY KEY,
             channel_link TEXT DEFAULT 'Not set',
-            views_count INTEGER DEFAULT 0,
-            reacts_count INTEGER DEFAULT 0,
+            views_count INTEGER DEFAULT 500,
+            reacts_count INTEGER DEFAULT 500,
             react_service TEXT DEFAULT 'ON',
             view_service TEXT DEFAULT 'OFF',
             emojis TEXT DEFAULT '👍 ❤️ 🔥'
@@ -90,7 +90,7 @@ def update_setting(key, value):
     conn.commit()
     conn.close()
 
-# --- ১০০% নিখুঁত লিংক ক্লিনার (আন্ডারস্কোর ও ক্যারেক্টার অক্ষুণ্ণ রাখবে) ---
+# --- লিংকের আন্ডারস্কোর ও স্পেশাল ক্যারেক্টার টিক রেখে সোজা করার ক্লিনার ---
 def clean_telegram_link(raw_text):
     text = raw_text.strip()
     if text.startswith("http://") or text.startswith("https://"):
@@ -117,7 +117,7 @@ class OneXPanelAPI:
 
 api_client = OneXPanelAPI(API_KEY)
 
-# --- কিবোর্ড সেটআপ (স্ক্রিনশটের লেআউট অনুযায়ী নিখুঁত বাটন বিন্যাস) ---
+# --- মূল রিপ্লাই কিবোর্ড ---
 def get_user_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("⚙️ Setup"), KeyboardButton("👤 Profile")],
@@ -182,7 +182,7 @@ async def show_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     coins = row[0] if row else 0
-    ch_link, views, reacts = setup_row if setup_row else ('Not set', 0, 0)
+    ch_link, views, reacts = setup_row if setup_row else ('Not set', 500, 500)
 
     is_prem = get_setting("is_premium") == "True"
     badge = "👑 [PREMIUM]" if is_prem else ""
@@ -199,9 +199,41 @@ async def show_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if update.callback_query:
-        await update.callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+        try:
+            await update.callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+        except:
+            await update.callback_query.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
     else:
         await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+# --- সেটআপ মেনু রেন্ডার করার ফাংশন ---
+async def open_setup_menu(query_or_message, user_id, context):
+    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT channel_link, views_count, reacts_count FROM user_setups WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    ch, views, reacts = row if row else ('Not set', 500, 500)
+
+    text = (
+        f"⚙️ **Setup Menu**\n\n"
+        f"🔗 Channel: {ch}\n"
+        f"👀 Views: {views}\n"
+        f"❤️ Reacts: {reacts}"
+    )
+
+    inline_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🔗 Channel: {ch}", callback_data="setup_set_channel")],
+        [InlineKeyboardButton(f"👀 Views: {views}", callback_data="setup_set_views"),
+         InlineKeyboardButton(f"❤️ Reacts: {reacts}", callback_data="setup_set_reacts")],
+        [InlineKeyboardButton("✅ Save Setup", callback_data="setup_save")]
+    ])
+
+    if hasattr(query_or_message, 'edit_text'):
+        await query_or_message.edit_text(text, reply_markup=inline_kb, parse_mode="Markdown")
+    else:
+        await query_or_message.reply_text(text, reply_markup=inline_kb, parse_mode="Markdown")
 
 # --- কলারব্যাক হ্যান্ডলার ---
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -217,78 +249,50 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("❌ আপনি এখনো গ্রুপে জয়েন করেননি!", show_alert=True)
 
-    elif data == "toggle_react":
+    elif data == "setup_set_channel":
+        context.user_data['setup_step'] = 'inline_wait_channel'
+        await query.message.reply_text("🔗 আপনার চ্যানেলের বা গ্রুপের লিংক/ইউজারনেম দিন (যেমন: `@GX_BIG_COMMUNITY` বা লিংক):")
+
+    elif data == "setup_set_views":
+        context.user_data['setup_step'] = 'inline_wait_views'
+        await query.message.reply_text("👀 কত ভিউ নিতে চান? (সংখ্যা লিখুন, যেমন: 500):")
+
+    elif data == "setup_set_reacts":
+        context.user_data['setup_step'] = 'inline_wait_reacts'
+        await query.message.reply_text("❤️ কত রিঅ্যাকশন নিতে চান? (সংখ্যা লিখুন, যেমন: 500):")
+
+    elif data == "setup_save":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute("SELECT react_service FROM user_setups WHERE user_id = ?", (user_id,))
-        curr = cursor.fetchone()[0]
-        new_val = "OFF" if curr == "ON" else "ON"
-        cursor.execute("UPDATE user_setups SET react_service = ? WHERE user_id = ?", (new_val, user_id))
-        conn.commit()
+        cursor.execute("SELECT channel_link, views_count, reacts_count FROM user_setups WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
         conn.close()
-        await render_settings_msg(query, user_id)
 
-    elif data == "toggle_view":
-        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT view_service FROM user_setups WHERE user_id = ?", (user_id,))
-        curr = cursor.fetchone()[0]
-        new_val = "OFF" if curr == "ON" else "ON"
-        cursor.execute("UPDATE user_setups SET view_service = ? WHERE user_id = ?", (new_val, user_id))
-        conn.commit()
-        conn.close()
-        await render_settings_msg(query, user_id)
+        ch, v_cnt, r_cnt = row if row else ('Not set', 500, 500)
+        v_cost = int((int(v_cnt) / 1000) * 2000)
+        r_cost = int((int(r_cnt) / 1000) * 3000)
 
-    elif data == "edit_settings_btn":
-        context.user_data['setup_step'] = 'waiting_channel'
-        await query.message.reply_text("🔗 আপনার চ্যানেলের আসল ইউজারনেম বা লিংক দিন (যেমন: `@GX_BIG_COMMUNITY`):")
+        # আপনার দেওয়া সঠিক ফরম্যাট
+        saved_text = (
+            f"✅ **Setup Saved!**\n\n"
+            f"📡 {ch}\n"
+            f"👀 Views: {v_cnt} ({v_cost} Coins/post)\n"
+            f"❤️ Reacts: {r_cnt} ({r_cost} Coins/post)"
+        )
+        await query.message.edit_text(saved_text, parse_mode="Markdown")
+        await show_dashboard(update, context)
 
     elif data.startswith("approve_pay_"):
         target_uid = data.split("_")[2]
         context.user_data['target_user_for_coins'] = target_uid
         context.user_data['waiting_admin_coin_input'] = True
-        await query.message.reply_text(
-            f"👤 **ইউজার আইডি:** `{target_uid}`\n\n"
-            f"✍️ **আপনি উনাকে কত কয়েন দিতে চান তা লিখুন:**",
-            parse_mode="Markdown"
-        )
+        await query.message.reply_text(f"👤 ইউজার আইডি: `{target_uid}`\n\n✍️ কত কয়েন দিতে চান তা লিখুন:", parse_mode="Markdown")
 
     elif data == "toggle_premium_mode":
         curr = get_setting("is_premium") == "True"
         new_v = "False" if curr else "True"
         update_setting("is_premium", new_v)
         await query.answer(f"Premium Mode set to {new_v}", show_alert=True)
-
-async def render_settings_msg(query, user_id):
-    conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT channel_link, react_service, view_service, reacts_count, views_count, emojis FROM user_setups WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-
-    ch, r_s, v_s, r_c, v_c, emo = row if row else ("Not set", "ON", "OFF", 0, 0, "👍 ❤️ 🔥")
-    ch_name = ch.split('/')[-1] if '/' in ch else ch
-
-    r_btn = f"👍 React: {r_s} {'✅' if r_s=='ON' else '❌'}"
-    v_btn = f"👁 Views: {v_s} {'✅' if v_s=='ON' else '❌'}"
-
-    text = (
-        f"🛠️ **Project Settings: {ch_name}**\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 **Link:** {ch}\n"
-        f"👍 **Reaction Service:** {r_s}\n"
-        f"👁 **View Service:** {v_s}\n"
-        f"🚀 **Reaction Count:** {r_c}\n"
-        f"👁 **View Count:** {v_c}\n"
-        f"😊 **Emoji:** POSITIVE {emo}"
-    )
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(r_btn, callback_data="toggle_react"), InlineKeyboardButton(v_btn, callback_data="toggle_view")],
-        [InlineKeyboardButton("✏️ Edit Settings", callback_data="edit_settings_btn")]
-    ])
-
-    await query.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 # --- মূল মেসেজ ও পোস্ট হ্যান্ডলার ---
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -317,7 +321,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_row = cursor.fetchone()
         current_coins = user_row[0] if user_row else 0
         
-        cursor.execute("SELECT reacts_count, views_count, react_service, view_service FROM user_setups WHERE user_id = ?", (target_user_id,))
+        cursor.execute("SELECT reacts_count, views_count FROM user_setups WHERE user_id = ?", (target_user_id,))
         setup_row = cursor.fetchone()
         
         reacts_qty = int(setup_row[0]) if setup_row and str(setup_row[0]).isdigit() else 500
@@ -372,7 +376,55 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_id:
         return
 
-    # ২. এডমিন কয়েন অনুমোদন
+    # ২. ইনলাইন সেটআপ স্টেপ হ্যান্ডলিং (Channel, Views, Reacts ইনপুট)
+    setup_step = context.user_data.get('setup_step')
+    if setup_step == 'inline_wait_channel':
+        clean_ch = clean_telegram_link(text)
+        context.user_data.pop('setup_step', None)
+        
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE user_setups SET channel_link = ? WHERE user_id = ?", (clean_ch, user_id))
+        conn.commit()
+        conn.close()
+        
+        await message.reply_text("✅ চ্যানেল লিংক সফলভাবে আপডেট হয়েছে!")
+        await open_setup_menu(message, user_id, context)
+        return
+
+    elif setup_step == 'inline_wait_views':
+        if not text.isdigit():
+            await message.reply_text("❌ দয়া করে সঠিক সংখ্যা লিখুন (যেমন: 500)।")
+            return
+        context.user_data.pop('setup_step', None)
+        
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE user_setups SET views_count = ? WHERE user_id = ?", (int(text), user_id))
+        conn.commit()
+        conn.close()
+        
+        await message.reply_text("✅ ভিউ সংখ্যা সফলভাবে আপডেট হয়েছে!")
+        await open_setup_menu(message, user_id, context)
+        return
+
+    elif setup_step == 'inline_wait_reacts':
+        if not text.isdigit():
+            await message.reply_text("❌ দয়া করে সঠিক সংখ্যা লিখুন (যেমন: 500)।")
+            return
+        context.user_data.pop('setup_step', None)
+        
+        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE user_setups SET reacts_count = ? WHERE user_id = ?", (int(text), user_id))
+        conn.commit()
+        conn.close()
+        
+        await message.reply_text("✅ রিঅ্যাকশন সংখ্যা সফলভাবে আপডেট হয়েছে!")
+        await open_setup_menu(message, user_id, context)
+        return
+
+    # ৩. এডমিন কয়েন অনুমোদন
     if user_id == ADMIN_ID and context.user_data.get('waiting_admin_coin_input'):
         target_uid = context.user_data.pop('target_user_for_coins', None)
         context.user_data['waiting_admin_coin_input'] = False
@@ -394,7 +446,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-    # ৩. TON Income ম্যানুয়াল অর্ডার প্রসেস
+    # ৪. TON Income ম্যানুয়াল অর্ডার প্রসেস
     if text == "💎 TON Income":
         context.user_data['ton_step'] = 'waiting_post_link'
         await message.reply_text("💎 **TON Income (One Click)**\n\n🔗 দয়া করে আপনার টেলিগ্রাম পোস্টের লিংক (Post Link) পাঠান:")
@@ -471,43 +523,12 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(f"❌ এপিআই অর্ডার নিতে সমস্যা হয়েছে। আপনার কয়েন ফেরত দেওয়া হয়েছে।")
         return
 
-    # ৪. Setup প্রসেস (আন্ডারস্কোরসহ পারফেক্ট লিংক সেভ করার জন্য)
+    # ৫. Setup বাটন ক্লিক করলে নতুন ইনলাইন মেনু ওপেন হবে
     if text == "⚙️ Setup":
-        context.user_data['setup_step'] = 'waiting_channel'
-        await message.reply_text("🔗 আপনার চ্যানেলের ইউজারনেম বা লিংক দিন (যেমন: `@GX_BIG_COMMUNITY` বা চ্যানেল লিংক):")
+        await open_setup_menu(message, user_id, context)
         return
 
-    setup_step = context.user_data.get('setup_step')
-    if setup_step == 'waiting_channel':
-        clean_ch = clean_telegram_link(text)
-        context.user_data['temp_channel'] = clean_ch
-        context.user_data['setup_step'] = 'waiting_reacts'
-        await message.reply_text("❤️ কত রিঅ্যাকশন নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
-        return
-    
-    elif setup_step == 'waiting_reacts':
-        context.user_data['temp_reacts'] = text
-        context.user_data['setup_step'] = 'waiting_views'
-        await message.reply_text("👀 কত ভিউ নিতে চান? (সংখ্যাটি লিখুন, যেমন: 500 বা 50000):")
-        return
-
-    elif setup_step == 'waiting_views':
-        ch = context.user_data.pop('temp_channel', 'Not set')
-        reacts = context.user_data.pop('temp_reacts', 500)
-        views = text
-        context.user_data.pop('setup_step', None)
-
-        conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE user_setups SET channel_link = ?, views_count = ?, reacts_count = ? WHERE user_id = ?", (ch, views, reacts, user_id))
-        conn.commit()
-        conn.close()
-
-        keyboard = get_admin_keyboard() if user_id == ADMIN_ID else get_user_keyboard()
-        await message.reply_text(f"✅ **সেটআপ সফলভাবে সেভ হয়েছে!**\n🔗 Link: {ch}\n❤️ Reacts: {reacts}\n👀 Views: {views}", reply_markup=keyboard, parse_mode="Markdown")
-        return
-
-    # ৫. Settings মেনু
+    # ৬. Settings মেনু
     if text == "🛠️ Settings":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -539,7 +560,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(card_text, reply_markup=kb, parse_mode="Markdown")
         return
 
-    # ৬. Order List
+    # ৭. Order List
     if text == "📦 Order List":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -556,7 +577,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(msg, parse_mode="Markdown")
         return
 
-    # ৭. Profile, Top-up, Admin Panel
+    # ৮. Profile, Top-up, Admin Panel
     if text == "👤 Profile":
         conn = sqlite3.connect("smm_bot.db", check_same_thread=False)
         cursor = conn.cursor()
@@ -613,7 +634,7 @@ def main():
     
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_router))
 
-    print("GX SMM Final Complete Bot is running successfully...")
+    print("GX SMM Inline Setup Bot is running successfully...")
     application.run_polling()
 
 if __name__ == "__main__":
