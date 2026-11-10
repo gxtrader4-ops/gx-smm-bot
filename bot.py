@@ -22,7 +22,7 @@ ORDER_CHANNEL_LINK = "https://t.me/GX_SMM_PREMIUM_PANEL"
 API_URL = "https://1xpanel.com/api/v2"
 API_KEY = os.getenv("e19e34d1e991b739cc18a9917e6d9144", "")
 REACTION_SERVICE_ID = os.getenv("1936", "")
-VIEW_SERVICE_ID = os.getenv("1936, "")
+VIEW_SERVICE_ID = os.getenv("5129", "")
 DEFAULT_BINANCE_UID = "1122595327"
 
 # লগিং সেটআপ
